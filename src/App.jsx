@@ -74,31 +74,27 @@ const CAPTION_TYPES = [
 
 // ─── API HELPERS ────────────────────────────────────────────────────────────────────────────────
 
-// OpenRouter — no CORS, free Gemini 2.0 Flash included
-async function callOpenRouter(apiKey, systemPrompt, userPrompt, imageDataList = []) {
-  const content = [];
+// Gemini API — direct call, works from Netlify
+async function callGemini(apiKey, systemPrompt, userPrompt, imageDataList = []) {
+  const parts = [];
   for (const img of imageDataList) {
-    content.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } });
+    parts.push({ inlineData: { mimeType: "image/jpeg", data: img } });
   }
-  content.push({ type: "text", text: systemPrompt + "\n\n" + userPrompt });
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + apiKey,
-      "HTTP-Referer": "https://kreatorai.app",
-      "X-Title": "KreatorAI"
-    },
-    body: JSON.stringify({
-      model: "meta-llama/llama-3.3-70b-instruct:free",
-      messages: [{ role: "user", content }],
-      temperature: 0.9,
-      max_tokens: 1500
-    }),
-  });
+  parts.push({ text: systemPrompt + "\n\n" + userPrompt });
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts }],
+        generationConfig: { temperature: 0.9, maxOutputTokens: 1500 }
+      }),
+    }
+  );
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || "OpenRouter error");
-  const text = data.choices?.[0]?.message?.content || "";
+  if (data.error) throw new Error(data.error.message || "Gemini error");
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   try { return JSON.parse(text.replace(/```json|```/g, "").trim()); }
   catch { return text; }
 }
@@ -124,8 +120,8 @@ async function callAI(keys, system, userPrompt, imageDataList = []) {
       : userPrompt;
     return callClaude(keys.claude, system, content);
   }
-  if (keys.openrouter) {
-    return callOpenRouter(keys.openrouter, system, userPrompt, imageDataList);
+  if (keys.gemini) {
+    return callGemini(keys.gemini, system, userPrompt, imageDataList);
   }
   throw new Error("NO_API_KEY");
 }
@@ -463,23 +459,23 @@ function SceneImgCard({ prompt, modelId, idx }) {
 
 // ─── API SETTINGS MODAL ───────────────────────────────────────────────────────
 function ApiModal({ keys, onSave, onClose }) {
-  const [openrouter, setOpenrouter] = useState(keys.openrouter || "");
+  const [gemini, setGemini] = useState(keys.gemini || "");
   const [claude, setClaude] = useState(keys.claude || "");
   const [testing, setTesting] = useState("");
   const [testResult, setTestResult] = useState({});
 
   const testOpenRouter = async () => {
-    if (!openrouter.trim()) return;
-    setTesting("openrouter");
+    if (!gemini.trim()) return;
+    setTesting("gemini");
     try {
-      await callOpenRouter(openrouter.trim(), "You are helpful.", "Reply with exactly: OK");
+      await callOpenRouter(gemini.trim(), "You are helpful.", "Reply with exactly: OK");
       setTestResult(p => ({ ...p, openrouter: "ok" }));
     } catch { setTestResult(p => ({ ...p, openrouter: "err" })); }
     finally { setTesting(""); }
   };
 
   const save = () => {
-    onSave({ openrouter: openrouter.trim(), claude: claude.trim() });
+    onSave({ openrouter: gemini.trim(), claude: claude.trim() });
     onClose();
   };
 
@@ -499,19 +495,19 @@ function ApiModal({ keys, onSave, onClose }) {
           <div className="api-section">
             <div className="api-section-title">
               <span style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 100, padding: "2px 8px", fontSize: 10, color: "var(--green)", fontWeight: 800 }}>✅ FREE</span>
-              🤖 OpenRouter — Gemini Free
+              🤖 Gemini API — Primary
             </div>
             <div className="api-row">
-              <input type="password" placeholder="sk-or-v1-..." value={openrouter}
-                onChange={e => { setOpenrouter(e.target.value); setTestResult(p => ({ ...p, openrouter: null })); }} />
-              <button className="api-save-btn" onClick={testOpenRouter} disabled={testing === "openrouter" || !openrouter.trim()}>
-                {testing === "openrouter" ? <div className="spin" /> : "Test"}
+              <input type="password" placeholder="AIzaSy..." value={gemini}
+                onChange={e => { setGemini(e.target.value); setTestResult(p => ({ ...p, openrouter: null })); }} />
+              <button className="api-save-btn" onClick={testOpenRouter} disabled={testing === "gemini" || !gemini.trim()}>
+                {testing === "gemini" ? <div className="spin" /> : "Test"}
               </button>
             </div>
             {testResult.openrouter === "ok" && <div className="api-status ok">✅ Working! Gemini 2.0 Flash via OpenRouter ready.</div>}
             {testResult.openrouter === "err" && <div className="api-status err">❌ Key tak valid. Semak balik.</div>}
             <div className="api-help">
-              Cara dapat free: <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a> → Daftar free → Create API key → Copy paste sini. <strong>Format: sk-or-v1-... · Gemini 2.0 Flash free!</strong>
+              Cara dapat free: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a> → Daftar free → Create API key → Copy paste sini. <strong>Format: AIzaSy... · Gemini 2.0 Flash free!</strong>
             </div>
           </div>
 
@@ -536,7 +532,7 @@ function ApiModal({ keys, onSave, onClose }) {
             💾 Simpan Settings
           </button>
 
-          {!keys.openrouter && !keys.claude && (
+          {!keys.gemini && !keys.claude && (
             <div className="warn-note">
               ⚠️ Belum ada API key. Masukkan Gemini API key dulu untuk guna app ni. Free je — 2 minit setup!
             </div>

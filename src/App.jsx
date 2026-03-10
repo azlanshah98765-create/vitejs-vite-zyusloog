@@ -75,16 +75,7 @@ const CAPTION_TYPES = [
 // ─── API HELPERS ────────────────────────────────────────────────────────────────────────────────
 
 // OpenRouter API — free models, works from Netlify
-const FREE_MODELS = [
-  "google/gemma-3-27b-it:free",
-  "google/gemma-3-12b-it:free", 
-  "qwen/qwen3-8b:free",
-  "mistralai/mistral-small-3.1-24b-instruct:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-];
-
-async function callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx = 0) {
-  const model = FREE_MODELS[modelIdx % FREE_MODELS.length];
+async function callOpenRouter(apiKey, systemPrompt, userPrompt) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -94,7 +85,7 @@ async function callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx = 0) {
       "X-Title": "KreatorAI"
     },
     body: JSON.stringify({
-      model,
+      model: "google/gemini-2.0-flash-001",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
@@ -104,10 +95,7 @@ async function callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx = 0) {
     }),
   });
   const data = await res.json();
-  // If rate limited, try next model
-  if (data.error?.code === 429 && modelIdx < FREE_MODELS.length - 1) {
-    return callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx + 1);
-  }
+  if (data.error?.code === 402) throw new Error("Kredit habis. Top up kat openrouter.ai/credits");
   if (data.error) throw new Error(data.error.message || "OpenRouter error");
   const text = data.choices?.[0]?.message?.content || "";
   try { return JSON.parse(text.replace(/```json|```/g, "").trim()); }
@@ -635,33 +623,30 @@ function Tab1({ modelId, apiKeys, onOpenApi }) {
   const hasKey = apiKeys.openrouter || apiKeys.claude;
 
   const generate = async () => {
-    if (!hasKey) { onOpenApi(); return; }
     if (!desc.trim() && !prodImgs.length) return;
     setLoading(true); setPrompts([]); setProgress(15);
-    setStatus("AI craft 4 prompt variations...");
+    setStatus("Membina 4 variasi prompt...");
     const style = STYLES[styleIdx].val;
 
-    const sys = `You are an expert AI image prompt engineer for TikTok & Shopee product photography Malaysia.
-Generate EXACTLY 4 unique creative prompts as a JSON array of 4 strings.
-Each variation must have different angle, setting, mood, composition.
-Include: subject detail, setting/background, lighting type, camera specs, mood, atmosphere.
-Style to use: ${style}
-Format: 9:16 vertical portrait. Return ONLY valid JSON array, nothing else.`;
-
-    const userPrompt = `Product: "${desc || "product in reference image"}"
-Style: ${style}
-Generate 4 creative 9:16 vertical variations as JSON array of 4 strings.`;
+    // Build 4 variations directly — no API needed!
+    const angles = [
+      "close-up hero shot, soft studio lighting, clean white background",
+      "lifestyle flat lay, natural daylight, marble surface, aesthetic props",
+      "model holding product, outdoor golden hour, bokeh background, candid feel",
+      "overhead top-down view, pastel backdrop, minimalist arrangement, shadows"
+    ];
 
     try {
       setProgress(55);
-      const imgs = [...prodImgs.slice(0, 2), ...(modelImgs.length ? [modelImgs[0]] : [])].map(i => i.data);
-      const r = await callAI(apiKeys, sys, userPrompt, imgs);
-      const arr = Array.isArray(r) ? r : [];
-      setPrompts(arr.map(p => `${p}, ${style}, 9:16 vertical format, ultra high quality`));
+      const baseDesc = desc || "premium product";
+      const arr = angles.map(angle => 
+        `${baseDesc}, ${angle}, ${style}, 9:16 vertical portrait, ultra high quality, photorealistic, shot on Canon EOS R5, 85mm f1.4 lens, professional product photography, TikTok Malaysia aesthetic`
+      );
+      setPrompts(arr);
       setProgress(100);
       setStatus("✅ Siap! Hover gambar untuk download.");
     } catch (e) {
-      setStatus(e.message === "NO_API_KEY" ? "⚠️ Setup API key dulu!" : "❌ Error. Cuba lagi.");
+      setStatus("❌ Error. Cuba lagi.");
     } finally { setLoading(false); }
   };
 
@@ -755,10 +740,11 @@ function Tab2({ modelId, apiKeys, onOpenApi }) {
     const maxW = { "6s": 12, "8s": 18, "15s": 35, "30s": 65, "60s": 110 }[duration] || 35;
 
     const sys = `Expert TikTok & Shopee Affiliate video scriptwriter, Malaysian market.
+User may write in Bahasa Malaysia — understand and respond accordingly.
 Return ONLY valid JSON (no markdown, no explanation):
-{ "scenes": [ { "type": "scene label", "description": "English visual description for AI image generation — include setting, lighting, camera angle, subject detail, mood, atmosphere, 9:16 vertical portrait", "dialog": "Bahasa Melayu dialog max ${maxW} words, natural conversational, emotionally engaging, viral-worthy", "caption": "BM on-screen text overlay max 6 words, punchy" } ] }
+{ "scenes": [ { "type": "scene label", "description": "ENGLISH image prompt — include setting, lighting, camera angle, subject detail, mood, atmosphere, 9:16 vertical portrait", "dialog": "Bahasa Melayu dialog max ${maxW} words, natural conversational, emotionally engaging, viral-worthy", "caption": "BM on-screen text overlay max 6 words, punchy" } ] }
 Structure: ${sel.scenes.join(" → ")}
-Make each scene visually distinct but brand consistent.`;
+Make each scene visually distinct but brand consistent. All image descriptions MUST be in English.`;
 
     const userPrompt = `Produk: ${desc}
 Audience: ${audience || "Wanita Malaysia 20-40"}
@@ -922,8 +908,9 @@ function Tab3({ modelId, apiKeys, onOpenApi }) {
     setLoading(true); setResult(null); setImgPrompts([]);
 
     const sys = `Viral Malaysian TikTok & Shopee Affiliate content strategist.
+User may write in Bahasa Malaysia — understand fully.
 Return ONLY valid JSON (no markdown):
-{ "hook":"viral BM hook max 10 words", "caption":"full BM caption with emoji 150-200 words", "hashtags":["20 relevant tags no # prefix"], "tiktok_desc":"TikTok desc max 150 chars with 5 hashtags", "shopee_desc":"Shopee SEO desc BM 80 words", "cta":"punchy BM CTA max 10 words", "imageIdeas":["4 different English image prompts for AI image generation, each unique angle/mood"] }`;
+{ "hook":"viral BM hook max 10 words", "caption":"full BM caption with emoji 150-200 words", "hashtags":["20 relevant tags no # prefix"], "tiktok_desc":"TikTok desc max 150 chars with 5 hashtags", "shopee_desc":"Shopee SEO desc BM 80 words", "cta":"punchy BM CTA max 10 words", "imageIdeas":["4 ENGLISH image prompts for AI generation, detailed, unique angle/mood each"] }`;
 
     const userPrompt = `Topic/Produk: "${topic || "product in image"}"
 Caption type: ${captionType}

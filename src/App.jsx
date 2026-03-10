@@ -74,27 +74,42 @@ const CAPTION_TYPES = [
 
 // ─── API HELPERS ────────────────────────────────────────────────────────────────────────────────
 
-// Gemini API — direct call, works from Netlify
-async function callGemini(apiKey, systemPrompt, userPrompt, imageDataList = []) {
-  const parts = [];
-  for (const img of imageDataList) {
-    parts.push({ inlineData: { mimeType: "image/jpeg", data: img } });
-  }
-  parts.push({ text: systemPrompt + "\n\n" + userPrompt });
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts }],
-        generationConfig: { temperature: 0.9, maxOutputTokens: 1500 }
-      }),
-    }
-  );
+// OpenRouter API — free models, works from Netlify
+const FREE_MODELS = [
+  "google/gemma-3-27b-it:free",
+  "google/gemma-3-12b-it:free", 
+  "qwen/qwen3-8b:free",
+  "mistralai/mistral-small-3.1-24b-instruct:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+];
+
+async function callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx = 0) {
+  const model = FREE_MODELS[modelIdx % FREE_MODELS.length];
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + apiKey,
+      "HTTP-Referer": "https://fascinating-lollipop-3b83af.netlify.app",
+      "X-Title": "KreatorAI"
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      max_tokens: 1000,
+      temperature: 0.9
+    }),
+  });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || "Gemini error");
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  // If rate limited, try next model
+  if (data.error?.code === 429 && modelIdx < FREE_MODELS.length - 1) {
+    return callOpenRouter(apiKey, systemPrompt, userPrompt, modelIdx + 1);
+  }
+  if (data.error) throw new Error(data.error.message || "OpenRouter error");
+  const text = data.choices?.[0]?.message?.content || "";
   try { return JSON.parse(text.replace(/```json|```/g, "").trim()); }
   catch { return text; }
 }
@@ -103,7 +118,7 @@ async function callClaude(apiKey, system, userContent) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system, messages: [{ role: "user", content: userContent }] }),
+    body: JSON.stringify({ model: "claude-sonnet-4-5-20250929", max_tokens: 1000, system, messages: [{ role: "user", content: userContent }] }),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
@@ -113,15 +128,13 @@ async function callClaude(apiKey, system, userContent) {
 }
 
 async function callAI(keys, system, userPrompt, imageDataList = []) {
+  if (keys.openrouter) return callOpenRouter(keys.openrouter, system, userPrompt);
   if (keys.claude) {
     const content = imageDataList.length
       ? [...imageDataList.map(d => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: d } })),
          { type: "text", text: userPrompt }]
       : userPrompt;
     return callClaude(keys.claude, system, content);
-  }
-  if (keys.gemini) {
-    return callGemini(keys.gemini, system, userPrompt, imageDataList);
   }
   throw new Error("NO_API_KEY");
 }
@@ -422,15 +435,24 @@ function UZ({ label, multi = false, images, setImages, maxCount = 4 }) {
 
 function ImgCard({ prompt, modelId, index, delay = 0 }) {
   const [loaded, setLoaded] = useState(false);
+  const [blobUrl, setBlobUrl] = useState(null);
   const model = MODELS.find(m => m.id === modelId);
   const seed = useRef(1000 + index * 337 + Math.floor(Math.random() * 400)).current;
   const url = prompt ? makeImgUrl(prompt, modelId, seed) : null;
+
+  useEffect(() => {
+    if (!url) return;
+    setBlobUrl(null); setLoaded(false);
+    fetch(url).then(r => r.blob()).then(blob => setBlobUrl(URL.createObjectURL(blob))).catch(() => {});
+  }, [url]);
+
+  const displayUrl = blobUrl || url;
   return (
     <div className="imgc" style={{ animationDelay: `${delay}ms` }}>
       <span className="imgc-num">#{index + 1}</span>
       <span className="imgc-model">{model?.short}</span>
       {!loaded && <div className="imgc-sh" />}
-      {url && <img src={url} alt="" onLoad={() => setLoaded(true)} style={{ display: loaded ? "block" : "none" }} />}
+      {displayUrl && <img src={displayUrl} alt="" onLoad={() => setLoaded(true)} style={{ display: loaded ? "block" : "none" }} />}
       <div className="imgc-overlay">
         <a href={url} target="_blank" rel="noreferrer" download>
           <button className="imgc-dl">⬇ Download</button>
@@ -459,14 +481,14 @@ function SceneImgCard({ prompt, modelId, idx }) {
 
 // ─── API SETTINGS MODAL ───────────────────────────────────────────────────────
 function ApiModal({ keys, onSave, onClose }) {
-  const [gemini, setGemini] = useState(keys.gemini || "");
+  const [gemini, setGemini] = useState(keys.openrouter || "");
   const [claude, setClaude] = useState(keys.claude || "");
   const [testing, setTesting] = useState("");
   const [testResult, setTestResult] = useState({});
 
   const testOpenRouter = async () => {
     if (!gemini.trim()) return;
-    setTesting("gemini");
+    setTesting("openrouter");
     try {
       await callOpenRouter(gemini.trim(), "You are helpful.", "Reply with exactly: OK");
       setTestResult(p => ({ ...p, openrouter: "ok" }));
@@ -495,19 +517,19 @@ function ApiModal({ keys, onSave, onClose }) {
           <div className="api-section">
             <div className="api-section-title">
               <span style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 100, padding: "2px 8px", fontSize: 10, color: "var(--green)", fontWeight: 800 }}>✅ FREE</span>
-              🤖 Gemini API — Primary
+              🤖 OpenRouter API — Primary (Free)
             </div>
             <div className="api-row">
-              <input type="password" placeholder="AIzaSy..." value={gemini}
+              <input type="password" placeholder="sk-or-v1-..." value={gemini}
                 onChange={e => { setGemini(e.target.value); setTestResult(p => ({ ...p, openrouter: null })); }} />
-              <button className="api-save-btn" onClick={testOpenRouter} disabled={testing === "gemini" || !gemini.trim()}>
-                {testing === "gemini" ? <div className="spin" /> : "Test"}
+              <button className="api-save-btn" onClick={testOpenRouter} disabled={testing === "openrouter" || !gemini.trim()}>
+                {testing === "openrouter" ? <div className="spin" /> : "Test"}
               </button>
             </div>
             {testResult.openrouter === "ok" && <div className="api-status ok">✅ Working! Gemini 2.0 Flash via OpenRouter ready.</div>}
             {testResult.openrouter === "err" && <div className="api-status err">❌ Key tak valid. Semak balik.</div>}
             <div className="api-help">
-              Cara dapat free: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a> → Daftar free → Create API key → Copy paste sini. <strong>Format: AIzaSy... · Gemini 2.0 Flash free!</strong>
+              Cara dapat free: <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a> → Daftar free → Create API key → Copy paste sini. <strong>Format: sk-or-v1-... · Gemini 2.0 Flash free!</strong>
             </div>
           </div>
 
@@ -532,7 +554,7 @@ function ApiModal({ keys, onSave, onClose }) {
             💾 Simpan Settings
           </button>
 
-          {!keys.gemini && !keys.claude && (
+          {!keys.openrouter && !keys.claude && (
             <div className="warn-note">
               ⚠️ Belum ada API key. Masukkan Gemini API key dulu untuk guna app ni. Free je — 2 minit setup!
             </div>
@@ -645,7 +667,7 @@ Generate 4 creative 9:16 vertical variations as JSON array of 4 strings.`;
 
   return (
     <div>
-      {!hasKey && <NoKeyBanner onOpen={onOpenApi} />}
+      
       <div className="card">
         <div className="g2">
           <div>
@@ -780,7 +802,7 @@ Generate complete ${sel.scenes.length}-scene video script.`;
 
   return (
     <div>
-      {!hasKey && <NoKeyBanner onOpen={onOpenApi} />}
+      
       <div className="g2 mb12">
         <div className="card" style={{ margin: 0 }}>
           <div className="card-title">📦 Produk & Info</div>
@@ -920,7 +942,7 @@ Generate complete content pack.`;
 
   return (
     <div>
-      {!hasKey && <NoKeyBanner onOpen={onOpenApi} />}
+      
       <div className="g2 mb12">
         <div className="card" style={{ margin: 0 }}>
           <div className="card-title">📸 Upload Gambar (optional)</div>
